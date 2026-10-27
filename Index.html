@@ -1,0 +1,412 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<meta name="theme-color" content="#060714">
+<title>NEON RUNNER — Cyber Dino</title>
+<style>
+:root{--c:#42f5ff;--p:#ff3bd4;--v:#9260ff;--bg:#060714}
+*{box-sizing:border-box}
+body{margin:0;min-height:100vh;padding:18px;display:grid;place-items:center;background:radial-gradient(ellipse at 50% 0%,#21123e,var(--bg) 68%);color:#e9fcff;font-family:Consolas,monospace}
+main{width:min(100%,960px)}
+header{display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;gap:10px}
+.logo{font-weight:900;font-size:clamp(22px,5vw,34px);letter-spacing:3px;color:var(--c);text-shadow:0 0 18px #42f5ff66}
+.logo span{color:var(--p)}
+.tag{font-size:10px;letter-spacing:2px;color:#8786b5;text-align:right}
+.panel{overflow:hidden;border:1px solid #42f5ff66;border-radius:12px;background:#080a1b;box-shadow:0 0 30px #42f5ff15,0 0 70px #9260ff12}
+.hud{display:flex;justify-content:space-between;padding:13px 16px;border-bottom:1px solid #42f5ff25;font-size:10px;letter-spacing:2px;color:#9297bf}
+.hud strong{display:block;font-size:21px;color:var(--c);margin-top:5px;text-shadow:0 0 12px #42f5ff55}
+#game{width:100%;height:auto;display:block;aspect-ratio:900/360;touch-action:manipulation;cursor:pointer}
+.controls{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;padding:14px 16px;border-top:1px solid #42f5ff25}
+.hint{font-size:11px;line-height:1.8;color:#888eb5}
+.actions{display:flex;gap:8px}
+button{font:inherit;font-size:11px;letter-spacing:1px;padding:10px 13px;border:1px solid var(--c);border-radius:5px;color:var(--c);background:#42f5ff0c;cursor:pointer}
+button:hover{background:#42f5ff20;box-shadow:0 0 15px #42f5ff30}
+button:active{transform:scale(.96)}
+#sound{border-color:var(--v);color:#c6adff}
+footer{margin-top:15px;display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;font-size:9px;letter-spacing:2px;color:#535779}
+@media(max-width:520px){body{padding:10px}.tag{font-size:8px}.hud{padding:10px}.hud strong{font-size:17px}.controls{padding:10px}.hint{font-size:9px}.actions{gap:5px}button{padding:9px;font-size:10px}}
+</style>
+</head>
+<body>
+<main>
+<header>
+  <div class="logo">NEON <span>RUNNER</span></div>
+  <div class="tag">CYBER ARCADE<br>/// SYSTEM 2088</div>
+</header>
+
+<section class="panel">
+  <div class="hud">
+    <div>SCORE<strong id="score">00000</strong></div>
+    <div style="text-align:right">BEST SCORE<strong id="best">00000</strong></div>
+  </div>
+  <canvas id="game" width="900" height="360" aria-label="赛博恐龙跑酷游戏"></canvas>
+  <div class="controls">
+    <div class="hint">SPACE / ↑ / W：跳跃<br>手机或平板：点击游戏区域跳跃</div>
+    <div class="actions">
+      <button id="sound">♫ 音效：开</button>
+      <button id="restart">↻ 重新开始</button>
+    </div>
+  </div>
+</section>
+<footer><span>NEON SYSTEMS © 2088</span><span>RUN. JUMP. SURVIVE.</span></footer>
+</main>
+
+<script>
+(() => {
+'use strict';
+
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const W = 900, H = 360, GROUND = 292;
+const $ = id => document.getElementById(id);
+
+let state = 'ready';
+let score = 0, best = 0, speed = 6;
+let obstacles = [], particles = [], stars = [];
+let frame = 0, spawnTimer = 70, shake = 0;
+let soundOn = true, audio = null, lastTime = 0;
+let raf = 0;
+
+try { best = Number(localStorage.getItem('neonRunnerBest') || 0); } catch(e) {}
+$('best').textContent = fmt(best);
+
+const dino = {
+  x: 105, y: GROUND - 48, w: 43, h: 48,
+  vy: 0, grounded: true, leg: 0
+};
+
+function fmt(n) {
+  return Math.floor(n).toString().padStart(5, '0');
+}
+
+for(let i=0;i<85;i++){
+  stars.push({
+    x:Math.random()*W, y:Math.random()*235,
+    r:Math.random()*1.4+.3, a:Math.random()*.6+.2
+  });
+}
+
+function beep(freq=440,duration=.07,type='square'){
+  if(!soundOn) return;
+  try{
+    audio = audio || new (window.AudioContext || window.webkitAudioContext)();
+    if(audio.state==='suspended') audio.resume();
+    const o=audio.createOscillator(), g=audio.createGain();
+    o.type=type; o.frequency.value=freq;
+    g.gain.setValueAtTime(.035,audio.currentTime);
+    g.gain.exponentialRampToValueAtTime(.001,audio.currentTime+duration);
+    o.connect(g);g.connect(audio.destination);
+    o.start();o.stop(audio.currentTime+duration);
+  }catch(e){}
+}
+
+function vibrate(ms=20){
+  if(navigator.vibrate) navigator.vibrate(ms);
+}
+
+function jump(){
+  if(state!=='running'){
+    if(state==='ready'||state==='over') startGame();
+    return;
+  }
+  if(!dino.grounded) return;
+  dino.vy=-13.7;
+  dino.grounded=false;
+  vibrate(20);
+  beep(580,.07,'triangle');
+  burst(dino.x+18,dino.y+dino.h,7,'#42f5ff');
+}
+
+function burst(x,y,count,color){
+  for(let i=0;i<count;i++){
+    particles.push({
+      x,y,vx:(Math.random()-.5)*5,
+      vy:(Math.random()-.8)*4,
+      life:20+Math.random()*15,max:35,
+      color,size:1+Math.random()*3
+    });
+  }
+}
+
+function startGame(){
+  cancelAnimationFrame(raf);
+  score=0;speed=6;frame=0;spawnTimer=55;shake=0;
+  obstacles=[];particles=[];
+  dino.y=GROUND-dino.h;dino.vy=0;dino.grounded=true;dino.leg=0;
+  $('score').textContent=fmt(0);
+  state='running';
+  beep(480,.1,'triangle');
+  lastTime=performance.now();
+  raf=requestAnimationFrame(loop);
+}
+
+function gameOver(){
+  if(state!=='running') return;
+  state='over';shake=8;vibrate(100);
+  beep(110,.28,'sawtooth');
+  burst(dino.x+20,dino.y+20,22,'#ff3bd4');
+  if(Math.floor(score)>best){
+    best=Math.floor(score);
+    try{localStorage.setItem('neonRunnerBest',String(best));}catch(e){}
+    $('best').textContent=fmt(best);
+  }
+  draw();
+  drawOverlay('SYSTEM FAILURE','你撞上了障碍物。','点击游戏区域或按空格键重新挑战');
+}
+
+function drawOverlay(title,sub,tip){
+  ctx.save();
+  ctx.fillStyle='rgba(5,6,20,.76)';
+  ctx.fillRect(0,0,W,H);
+  ctx.textAlign='center';
+  ctx.shadowBlur=22;ctx.shadowColor='#42f5ff';
+  ctx.fillStyle='#42f5ff';
+  ctx.font='bold 39px Consolas,monospace';
+  ctx.fillText(title,W/2,H/2-24);
+  ctx.shadowBlur=0;
+  ctx.fillStyle='#e5e8ff';
+  ctx.font='16px Consolas,monospace';
+  ctx.fillText(sub,W/2,H/2+12);
+  ctx.fillStyle='#ff3bd4';
+  ctx.font='12px Consolas,monospace';
+  ctx.fillText(tip,W/2,H/2+42);
+  ctx.restore();
+}
+
+function background(){
+  const bg=ctx.createLinearGradient(0,0,0,H);
+  bg.addColorStop(0,'#08091c');
+  bg.addColorStop(1,'#11102d');
+  ctx.fillStyle=bg;ctx.fillRect(0,0,W,H);
+
+  // distant neon city
+  for(let i=0;i<19;i++){
+    const x=i*53;
+    const bh=35+(i*37%65);
+    ctx.fillStyle=i%2?'#101332':'#15102f';
+    ctx.fillRect(x,GROUND-bh,35,bh);
+    ctx.fillStyle='#42f5ff';
+    ctx.globalAlpha=.35;
+    for(let wy=GROUND-bh+9;wy<GROUND-7;wy+=13){
+      if((wy+i)%3!==0)ctx.fillRect(x+7,wy,3,4);
+      if((wy+i)%4!==0)ctx.fillRect(x+19,wy,3,4);
+    }
+    ctx.globalAlpha=1;
+  }
+
+  // stars
+  for(const s of stars){
+    ctx.globalAlpha=s.a;
+    ctx.fillStyle='#c3faff';
+    ctx.fillRect(s.x,s.y,s.r,s.r);
+  }
+  ctx.globalAlpha=1;
+
+  // horizon glow
+  const glow=ctx.createLinearGradient(0,GROUND-20,0,GROUND+40);
+  glow.addColorStop(0,'#42f5ff14');
+  glow.addColorStop(1,'#42f5ff00');
+  ctx.fillStyle=glow;ctx.fillRect(0,GROUND-20,W,40);
+
+  // perspective floor
+  ctx.strokeStyle='#42f5ff36';ctx.lineWidth=1;
+  for(let i=0;i<13;i++){
+    const y=GROUND+i*i*0.42;
+    ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(W,y);ctx.stroke();
+  }
+  const offset=(frame*speed*.65)%90;
+  for(let x=-H;x<W+H;x+=90){
+    ctx.beginPath();ctx.moveTo(W/2+(x-W/2)*.08,GROUND);
+    ctx.lineTo(x-offset, H);ctx.stroke();
+  }
+
+  ctx.strokeStyle='#42f5ff';
+  ctx.shadowBlur=12;ctx.shadowColor='#42f5ff';
+  ctx.beginPath();ctx.moveTo(0,GROUND);ctx.lineTo(W,GROUND);ctx.stroke();
+  ctx.shadowBlur=0;
+}
+
+function drawDino(){
+  const x=dino.x,y=dino.y;
+  ctx.save();
+  ctx.translate(x,y);
+  ctx.shadowBlur=16;ctx.shadowColor='#42f5ff';
+  ctx.fillStyle='#42f5ff';
+  // tail
+  ctx.beginPath();ctx.moveTo(5,29);ctx.lineTo(-8,23);ctx.lineTo(-4,35);ctx.lineTo(5,37);ctx.fill();
+  // body
+  ctx.fillRect(5,15,26,27);
+  // head
+  ctx.fillRect(19,2,23,23);
+  ctx.fillRect(31,12,15,10);
+  // cyber armor
+  ctx.shadowBlur=0;
+  ctx.fillStyle='#143e5a';ctx.fillRect(9,19,19,17);
+  ctx.fillStyle='#ff3bd4';ctx.fillRect(23,7,17,3);
+  // eye
+  ctx.fillStyle='#ffffff';ctx.fillRect(34,7,5,5);
+  ctx.fillStyle='#ff3bd4';ctx.fillRect(36,8,3,3);
+  // glowing chest
+  ctx.fillStyle='#42f5ff';ctx.fillRect(17,24,5,7);
+  // legs animate
+  ctx.fillStyle='#42f5ff';
+  if(dino.grounded && state==='running'){
+    const step=Math.floor(dino.leg)%2;
+    if(step===0){
+      ctx.fillRect(9,39,7,9);ctx.fillRect(24,38,7,6);
+      ctx.fillRect(22,43,9,5);
+    }else{
+      ctx.fillRect(10,39,7,6);ctx.fillRect(7,43,9,5);
+      ctx.fillRect(25,39,7,9);
+    }
+  }else{
+    ctx.fillRect(10,39,7,7);ctx.fillRect(25,39,7,7);
+  }
+  // pixel details
+  ctx.fillStyle='#ffffff';ctx.fillRect(11,21,3,3);
+  ctx.restore();
+}
+
+function drawObstacle(o){
+  ctx.save();
+  ctx.shadowBlur=15;ctx.shadowColor=o.color;
+  ctx.strokeStyle=o.color;ctx.fillStyle=o.color;
+  ctx.lineWidth=2;
+  if(o.type===0){
+    // laser crystal
+    ctx.beginPath();
+    ctx.moveTo(o.x+o.w/2,o.y);
+    ctx.lineTo(o.x+o.w,o.y+o.h*.4);
+    ctx.lineTo(o.x+o.w*.75,o.y+o.h);
+    ctx.lineTo(o.x+o.w*.2,o.y+o.h);
+    ctx.lineTo(o.x,o.y+o.h*.35);
+    ctx.closePath();ctx.fill();
+    ctx.fillStyle='#15112e';
+    ctx.beginPath();
+    ctx.moveTo(o.x+o.w/2,o.y+7);
+    ctx.lineTo(o.x+o.w-5,o.y+o.h*.4);
+    ctx.lineTo(o.x+o.w*.7,o.y+o.h-5);
+    ctx.lineTo(o.x+6,o.y+o.h-5);
+    ctx.lineTo(o.x+4,o.y+o.h*.4);
+    ctx.closePath();ctx.fill();
+    ctx.fillStyle='#fff';ctx.fillRect(o.x+o.w/2-2,o.y+o.h*.45,4,4);
+  }else{
+    ctx.fillRect(o.x,o.y,o.w,o.h);
+    ctx.fillStyle='#17112f';
+    ctx.fillRect(o.x+5,o.y+5,o.w-10,o.h-10);
+    ctx.fillStyle='#ff3bd4';
+    ctx.fillRect(o.x+5,o.y+8,o.w-10,3);
+    ctx.fillRect(o.x+5,o.y+o.h-11,o.w-10,3);
+    ctx.strokeStyle='#ff3bd4';
+    ctx.strokeRect(o.x-4,o.y+o.h-4,o.w+8,4);
+  }
+  ctx.restore();
+}
+
+function update(dt){
+  if(state!=='running')return;
+  frame+=dt;
+  score+=dt*.12*speed;
+  speed=Math.min(13,6+score/600);
+  $('score').textContent=fmt(score);
+
+  dino.vy+=.62*dt;
+  dino.y+=dino.vy*dt;
+  if(dino.y>=GROUND-dino.h){
+    if(!dino.grounded&&dino.vy>1){
+      burst(dino.x+20,GROUND,4,'#42f5ff');
+    }
+    dino.y=GROUND-dino.h;dino.vy=0;dino.grounded=true;
+  }
+  if(dino.grounded)dino.leg+=.22*dt;
+
+  spawnTimer-=dt;
+  if(spawnTimer<=0){
+    const type=Math.random()<.72?0:1;
+    const h=type===0?27+Math.random()*20:36+Math.random()*17;
+    const w=type===0?25+Math.random()*10:24+Math.random()*12;
+    obstacles.push({x:W+10,y:GROUND-h,w,h,type,color:type===0?'#ff3bd4':'#9260ff'});
+    spawnTimer=Math.max(43,75+Math.random()*45-speed*2.2);
+  }
+
+  for(let i=obstacles.length-1;i>=0;i--){
+    const o=obstacles[i];o.x-=speed*dt;
+    const pad=7;
+    if(dino.x+pad<o.x+o.w-pad&&dino.x+dino.w-pad>o.x+pad&&
+       dino.y+pad<o.y+o.h-pad&&dino.y+dino.h-pad>o.y+pad){
+      gameOver();return;
+    }
+    if(o.x+o.w<0)obstacles.splice(i,1);
+  }
+
+  for(let i=particles.length-1;i>=0;i--){
+    const p=particles[i];p.x+=p.vx*dt;p.y+=p.vy*dt;
+    p.vy+=.12*dt;p.life-=dt;
+    if(p.life<=0)particles.splice(i,1);
+  }
+  shake=Math.max(0,shake-dt*.6);
+}
+
+function draw(){
+  ctx.save();
+  if(shake>0)ctx.translate((Math.random()-.5)*shake,(Math.random()-.5)*shake);
+  background();
+  obstacles.forEach(drawObstacle);
+  drawDino();
+  for(const p of particles){
+    ctx.globalAlpha=Math.max(0,p.life/p.max);
+    ctx.fillStyle=p.color;
+    ctx.shadowBlur=8;ctx.shadowColor=p.color;
+    ctx.fillRect(p.x,p.y,p.size,p.size);
+  }
+  ctx.globalAlpha=1;ctx.shadowBlur=0;
+  if(state==='ready'){
+    drawOverlay('NEON RUNNER','穿越霓虹废土，躲避致命陷阱','点击屏幕 / 按空格键开始');
+  }else if(state==='over'){
+    drawOverlay('SYSTEM FAILURE','本次得分：'+fmt(score),'点击屏幕 / 按空格键重新挑战');
+  }
+  ctx.restore();
+}
+
+function loop(now){
+  if(state!=='running')return;
+  const dt=Math.min((now-lastTime)/16.667,2);
+  lastTime=now;
+  update(dt);
+  draw();
+  if(state==='running')raf=requestAnimationFrame(loop);
+}
+
+function action(){
+  if(state==='ready'||state==='over'){startGame();return;}
+  jump();
+}
+
+canvas.addEventListener('pointerdown',e=>{
+  e.preventDefault();
+  if(state!=='running'){startGame();return;}
+  jump();
+});
+window.addEventListener('keydown',e=>{
+  if(['Space','ArrowUp','KeyW'].includes(e.code)){
+    e.preventDefault();
+    if(!e.repeat)action();
+  }
+});
+$('restart').addEventListener('click',startGame);
+$('sound').addEventListener('click',()=>{
+  soundOn=!soundOn;
+  $('sound').textContent=soundOn?'♫ 音效：开':'♫ 音效：关';
+  if(soundOn)beep(600,.06,'triangle');
+});
+
+// Initial screen
+draw();
+
+})();
+</script>
+</body>
+</html>
